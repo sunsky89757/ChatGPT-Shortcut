@@ -81,6 +81,11 @@ const config = {
     ({
       // Replace with your project's social card
       // image: 'img/docusaurus-social-card.jpg',
+      colorMode: {
+        defaultMode: "dark",
+        disableSwitch: false,
+        respectPrefersColorScheme: false,
+      },
       metadata: [
         {
           name: "keywords",
@@ -178,6 +183,9 @@ const config = {
       prism: {
         theme: prismThemes.github,
         darkTheme: prismThemes.dracula,
+      },
+      future: {
+        experimental_faster: true,
       },
 
       /* announcementBar: {
