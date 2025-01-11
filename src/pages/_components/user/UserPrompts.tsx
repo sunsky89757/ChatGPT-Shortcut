@@ -2,38 +2,116 @@ import React, { useContext, useState, useEffect, useCallback } from "react";
 import clsx from "clsx";
 import Translate, { translate } from "@docusaurus/Translate";
 import copy from "copy-text-to-clipboard";
-import styles from "../ShowcaseCard/styles.module.css";
-import { AuthContext } from "../AuthContext";
 import { Form, Input, Button, message, Spin, Modal, Typography, Tooltip, Switch, Tag } from "antd";
-import { getPrompts, updatePrompt, deletePrompt, updatePromptsOrder, updateLocalStorageCache } from "@site/src/api";
 import { CopyOutlined, DeleteOutlined, EditOutlined, CheckOutlined, CloseOutlined } from "@ant-design/icons";
-import { DragDropContext, Droppable, Draggable } from "react-beautiful-dnd";
+import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import styles from "../ShowcaseCard/styles.module.css";
 
-export default function UserPromptsPage() {
+import { getPrompts, updatePrompt, deletePrompt, updatePromptsOrder, updateLocalStorageCache } from "@site/src/api";
+import { AuthContext } from "../AuthContext";
+
+// SortableItem component
+const SortablePromptItem = ({ UserPrompt, index, copiedIndex, isFiltered, handleCopyClick, handleDeletePrompt, handleEditPrompt }) => {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: UserPrompt.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    cursor: isFiltered ? "default" : "grab",
+  };
+
+  return (
+    <li ref={setNodeRef} className="card shadow--md" style={style}>
+      <div
+        className={clsx("card__body")}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "space-between",
+          height: "100%",
+        }}>
+        <div>
+          <div className={clsx(styles.showcaseCardHeader)}>
+            <div className={`${styles.showcaseCardTitle} ${styles.shortEllipsisMy}`} {...attributes} {...(isFiltered ? {} : listeners)}>
+              <span className={styles.showcaseCardLink} style={{ color: "var(--ifm-color-primary)" }}>
+                {UserPrompt.title}{" "}
+              </span>
+              {UserPrompt.upvoteDifference > 0 && <Tag color="green">+{UserPrompt.upvoteDifference}</Tag>}
+            </div>
+            <Tooltip title={translate({ id: "theme.CodeBlock.copy", message: "复制" })}>
+              <Button type="default" onClick={() => handleCopyClick(index)}>
+                <CopyOutlined />
+                {copiedIndex === index && <Translate id="theme.CodeBlock.copied">已复制</Translate>}
+              </Button>
+            </Tooltip>
+          </div>
+          <p className={styles.showcaseCardBody} {...attributes} {...(isFiltered ? {} : listeners)}>
+            {UserPrompt.remark && (
+              <>
+                👉 {UserPrompt.remark}
+                <br />
+              </>
+            )}
+            {UserPrompt.description}
+          </p>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <Tooltip title={<Translate id="delete">删除</Translate>}>
+            <a style={{ fontSize: "14px", cursor: "pointer" }} onClick={() => handleDeletePrompt(UserPrompt.id)}>
+              <DeleteOutlined />
+              <Translate id="delete">删除</Translate>
+            </a>
+          </Tooltip>
+          <Tooltip title={<Translate id="edit">修改</Translate>}>
+            <a style={{ fontSize: "14px", cursor: "pointer" }} onClick={() => handleEditPrompt(UserPrompt)}>
+              <EditOutlined />
+              <Translate id="edit">修改</Translate>
+            </a>
+          </Tooltip>
+        </div>
+      </div>
+    </li>
+  );
+};
+
+export default function UserPromptsPage({ filteredCommus = [], isFiltered = false }) {
   const { userAuth, refreshUserAuth } = useContext(AuthContext);
+  const [messageApi, contextHolder] = message.useMessage();
   const [userprompts, setUserPrompts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [hasDragged, setHasDragged] = useState(false);
-
   const [open, setOpen] = useState(false);
+  const [editingPromptId, setEditingPromptId] = useState(null);
+  const [form] = Form.useForm();
+
+  // Configure dnd-kit sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
 
   useEffect(() => {
-    if (!userAuth || !userAuth.data) {
-      return;
-    }
-    const myPrompts = userAuth.data.userprompts || [];
+    if (!userAuth?.data) return;
     const fetchPrompts = async () => {
       try {
-        const myPromptsData = await getPrompts("userprompts", myPrompts);
-        setUserPrompts(myPromptsData);
+        if (isFiltered) {
+          setUserPrompts(filteredCommus);
+        } else {
+          const myPrompts = userAuth.data?.userprompts || [];
+          const myPromptsData = await getPrompts("userprompts", myPrompts);
+          setUserPrompts(myPromptsData);
+        }
       } catch (error) {
-        console.error(error);
+        console.error("Failed to fetch prompts:", error);
       }
     };
-
     fetchPrompts();
-  }, [userAuth]);
+  }, [userAuth, isFiltered, filteredCommus]);
 
   const handleCopyClick = useCallback(
     (index) => {
@@ -49,9 +127,6 @@ export default function UserPromptsPage() {
     [userprompts]
   );
 
-  // 新增的状态变量，用于跟踪正在被编辑的 UserPrompt 的 id
-  const [editingPromptId, setEditingPromptId] = useState(null);
-  const [form] = Form.useForm();
   const handleEditPrompt = useCallback(
     (UserPrompt) => {
       setEditingPromptId(UserPrompt.id);
@@ -63,17 +138,20 @@ export default function UserPromptsPage() {
 
   const onUpdateprompt = useCallback(
     async (values) => {
-      //setLoading(true);
       try {
         await updatePrompt(editingPromptId, values);
-        await refreshUserAuth();
-        message.success(<Translate id="message.success">词条更新成功！</Translate>);
+        refreshUserAuth();
+        messageApi.open({
+          type: "success",
+          content: <Translate id="message.success">词条提交成功！</Translate>,
+        });
         setOpen(false);
       } catch (err) {
         console.error(err);
-        message.error(<Translate id="message.error">词条更新失败，请稍后重试</Translate>);
-      } finally {
-        //setLoading(false);
+        messageApi.open({
+          type: "error",
+          content: <Translate id="message.error">词条提交失败，请稍后重试</Translate>,
+        });
       }
     },
     [editingPromptId, refreshUserAuth]
@@ -84,16 +162,19 @@ export default function UserPromptsPage() {
       title: <Translate id="message.deletePrompt.confirm.title">Confirm Delete</Translate>,
       content: <Translate id="message.deletePrompt.confirm.content">Are you sure you want to delete this prompt?</Translate>,
       onOk: async () => {
-        //setLoading(true);
         try {
           await deletePrompt(promptId);
-          await refreshUserAuth();
-          message.success(<Translate id="message.deletePrompt.success">Prompt successfully deleted!</Translate>);
+          refreshUserAuth();
+          messageApi.open({
+            type: "success",
+            content: <Translate id="message.deletePrompt.success">Prompt successfully deleted!</Translate>,
+          });
         } catch (err) {
           console.error(err);
-          message.error(<Translate id="message.deletePrompt.error">Failed to delete prompt, please try again later.</Translate>);
-        } finally {
-          //setLoading(false);
+          messageApi.open({
+            type: "error",
+            content: <Translate id="message.deletePrompt.error">Failed to delete prompt, please try again later.</Translate>,
+          });
         }
       },
       onCancel() {
@@ -102,29 +183,19 @@ export default function UserPromptsPage() {
     });
   };
 
-  if (loading) {
-    return (
-      <div style={{ display: "flex", justifyContent: "center", padding: "50px" }}>
-        <Spin size="large" />
-      </div>
-    );
-  }
-  const onDragEnd = useCallback(
-    (result) => {
-      const { source, destination } = result;
+  const handleDragEnd = useCallback((event) => {
+    const { active, over } = event;
 
-      if (!destination || (source.droppableId === destination.droppableId && source.index === destination.index)) {
-        return;
-      }
+    if (active.id !== over?.id) {
       setHasDragged(true);
-      const items = Array.from(userprompts);
-      const [reorderedItem] = items.splice(source.index, 1);
-      items.splice(destination.index, 0, reorderedItem);
+      setUserPrompts((items) => {
+        const oldIndex = items.findIndex((item) => item.id === active.id);
+        const newIndex = items.findIndex((item) => item.id === over.id);
+        return arrayMove(items, oldIndex, newIndex);
+      });
+    }
+  }, []);
 
-      setUserPrompts(items);
-    },
-    [userprompts]
-  );
   useEffect(() => {
     if (hasDragged) {
       const ids = userprompts.map((item) => item.id);
@@ -135,82 +206,40 @@ export default function UserPromptsPage() {
     }
   }, [userprompts]);
 
+  if (!userAuth?.data || loading) {
+    return <Spin />;
+  }
+
   return (
     <>
-      <DragDropContext onDragEnd={onDragEnd}>
-        <Droppable droppableId="userpromptsDroppable">
-          {(provided) => (
-            <ul className="clean-list showcaseList_Cwj2" {...provided.droppableProps} ref={provided.innerRef}>
-              {!userprompts || userprompts.length === 0 ? (
-                <li className="card shadow--md">
-                  <div className={clsx("card__body", styles.cardBodyHeight)}>
-                    <p>No user prompts submitted yet.</p>
-                    <p>Please submit your prompts.</p>
-                  </div>
-                </li>
-              ) : (
-                userprompts.map((UserPrompt, index) => (
-                  <Draggable key={UserPrompt.id} draggableId={UserPrompt.id.toString()} index={index}>
-                    {(provided) => (
-                      <li ref={provided.innerRef} {...provided.draggableProps} {...provided.dragHandleProps} className="card shadow--md">
-                        <div
-                          className={clsx("card__body")}
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            justifyContent: "space-between",
-                            height: "100%",
-                          }}>
-                          <div>
-                            <div className={clsx(styles.showcaseCardHeader)}>
-                              <div className={`${styles.showcaseCardTitle} ${styles.shortEllipsisMy}`}>
-                                <span className={styles.showcaseCardLink} style={{ color: "var(--ifm-color-primary)" }}>
-                                  {UserPrompt.title}{" "}
-                                </span>
-                                {UserPrompt.upvoteDifference > 0 && <Tag color="green">+{UserPrompt.upvoteDifference}</Tag>}
-                              </div>
-                              <Tooltip title={translate({ id: "theme.CodeBlock.copy", message: "复制" })}>
-                                <Button type="default" onClick={() => handleCopyClick(index)}>
-                                  <CopyOutlined />
-                                  {copiedIndex === index && <Translate id="theme.CodeBlock.copied">已复制</Translate>}
-                                </Button>
-                              </Tooltip>
-                            </div>
-                            <p className={styles.showcaseCardBody}>
-                              {UserPrompt.remark && (
-                                <>
-                                  👉 {UserPrompt.remark}
-                                  <br />
-                                </>
-                              )}
-                              {UserPrompt.description}
-                            </p>
-                          </div>
-                          <div style={{ display: "flex", justifyContent: "space-between" }}>
-                            <Tooltip title={<Translate id="delete">删除</Translate>}>
-                              <a style={{ fontSize: "14px", cursor: "pointer" }} onClick={() => handleDeletePrompt(UserPrompt.id)}>
-                                <DeleteOutlined />
-                                <Translate id="delete">删除</Translate>
-                              </a>
-                            </Tooltip>
-                            <Tooltip title={<Translate id="edit">修改</Translate>}>
-                              <a style={{ fontSize: "14px", cursor: "pointer" }} onClick={() => handleEditPrompt(UserPrompt)}>
-                                <EditOutlined />
-                                <Translate id="edit">修改</Translate>
-                              </a>
-                            </Tooltip>
-                          </div>
-                        </div>
-                      </li>
-                    )}
-                  </Draggable>
-                ))
-              )}
-              {provided.placeholder}
-            </ul>
+      {contextHolder}
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <ul className="clean-list showcaseList_Cwj2">
+          {!userprompts || userprompts.length === 0 ? (
+            <li className="card shadow--md">
+              <div className={clsx("card__body", styles.cardBodyHeight)}>
+                <p>No user prompts submitted yet.</p>
+                <p>Please add your prompts.</p>
+              </div>
+            </li>
+          ) : (
+            <SortableContext items={userprompts.map((item) => item.id)}>
+              {userprompts.map((UserPrompt, index) => (
+                <SortablePromptItem
+                  key={UserPrompt.id}
+                  UserPrompt={UserPrompt}
+                  index={index}
+                  copiedIndex={copiedIndex}
+                  isFiltered={isFiltered}
+                  handleCopyClick={handleCopyClick}
+                  handleDeletePrompt={handleDeletePrompt}
+                  handleEditPrompt={handleEditPrompt}
+                />
+              ))}
+            </SortableContext>
           )}
-        </Droppable>
-      </DragDropContext>
+        </ul>
+      </DndContext>
 
       <Modal
         title={translate({
@@ -221,7 +250,7 @@ export default function UserPromptsPage() {
         footer={null}
         onCancel={() => {
           setOpen(false);
-          form.resetFields(); // 关闭编辑框时重置表单的值
+          form.resetFields();
         }}>
         <Form form={form} onFinish={onUpdateprompt}>
           <Form.Item
